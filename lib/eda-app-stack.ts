@@ -17,42 +17,40 @@ export class EDAAppStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const imagesBucket = new s3.Bucket(this, "images", {
+    const imagesBucket = new s3.Bucket(this, "Images", {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
       publicReadAccess: false,
     });
 
     const imageTable = new dynamodb.Table(this, "ImageTable", {
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       partitionKey: { name: "fileName", type: dynamodb.AttributeType.STRING },
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+      tableName: "Images",
     });
 
   
       // Integration infrastructure
 
+      const deadLetterQue = new sqs.Queue(this, "deadLetterQueue", {
+        queueName: "deadLetterQue",
+        retentionPeriod: cdk.Duration.minutes(40),
+    });
+
       const imageProcessQueue = new sqs.Queue(this, "img-created-queue", {
         receiveMessageWaitTime: cdk.Duration.seconds(10),
-      });
+        deadLetterQueue: {
+          queue: deadLetterQue,
+          maxReceiveCount: 4
+        },
+       // retentionPeriod: cdk.Duration.seconds(90)
+      }); 
 
       const newImageTopic = new sns.Topic(this, "NewImageTopic", {
         displayName: "New Image topic",
       }); 
 
-      const mailerQ = new sqs.Queue(this, "mailer-queue", {
-        receiveMessageWaitTime: cdk.Duration.seconds(10),
-      });
-
-
-      //SNS
-      newImageTopic.addSubscription(
-        new subs.SqsSubscription(imageProcessQueue)
-      );
-
-      newImageTopic.addSubscription(
-        new subs.SqsSubscription(mailerQ)
-      );
-  
       // Lambda functions
   
       const processImageFn = new lambdanode.NodejsFunction(
@@ -64,13 +62,18 @@ export class EDAAppStack extends cdk.Stack {
           entry: `${__dirname}/../lambdas/processImage.ts`,
           timeout: cdk.Duration.seconds(15),
           memorySize: 128,
+          deadLetterQueue: deadLetterQue,
+          environment: {
+            Table_Name: "images",
+            Region: 'eu-west-1',
+          },
         }
       );
 
       const mailerFn = new lambdanode.NodejsFunction(this, "mailer-function", {
         runtime: lambda.Runtime.NODEJS_16_X,
-        memorySize: 1024,
-        timeout: cdk.Duration.seconds(3),
+        memorySize: 128,
+        timeout: cdk.Duration.seconds(15),
         entry: `${__dirname}/../lambdas/mailer.ts`,
       });
 
@@ -80,15 +83,6 @@ export class EDAAppStack extends cdk.Stack {
         timeout: cdk.Duration.seconds(15),
         entry: `${__dirname}/../lambdas/rejectionMailer.ts`,
       });
-
-  
-      new subs.SqsSubscription(imageProcessQueue, {
-        filterPolicy: {
-          imageType: sns.SubscriptionFilter.stringFilter({
-            allowlist: ['.jpeg', '.png'],
-          }),
-        },
-      }),
 
   
       // Event triggers
@@ -104,13 +98,24 @@ export class EDAAppStack extends cdk.Stack {
         maxBatchingWindow: cdk.Duration.seconds(10),
       });
 
-      const newImageMailEventSource = new events.SqsEventSource(mailerQ, {
+      const rejectionMailEventSource = new events.SqsEventSource(deadLetterQue, {
         batchSize: 5,
         maxBatchingWindow: cdk.Duration.seconds(10),
-      }); 
+      });
+
+      //Subscribing lamda directly to SNS topic
+      const lambdaSub = new subs.LambdaSubscription(mailerFn)
+    newImageTopic.addSubscription(lambdaSub);
+
+    newImageTopic.addSubscription(
+      new subs.SqsSubscription(imageProcessQueue,
+      ),
+    );
+ 
   
       processImageFn.addEventSource(newImageEventSource);
-      mailerFn.addEventSource(newImageMailEventSource);
+      //mailerFn.addEventSource(newImageMailEventSource);
+      rejectionMailerFn.addEventSource(rejectionMailEventSource);
   
   
       // Permissions
@@ -119,6 +124,18 @@ export class EDAAppStack extends cdk.Stack {
       imageTable.grantReadWriteData(processImageFn);
 
       mailerFn.addToRolePolicy(
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            "ses:SendEmail",
+            "ses:SendRawEmail",
+            "ses:SendTemplatedEmail",
+          ],
+          resources: ["*"],
+        })
+      );
+
+      rejectionMailerFn.addToRolePolicy(
         new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,
           actions: [

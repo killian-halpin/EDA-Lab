@@ -1,8 +1,7 @@
 /* eslint-disable import/extensions, import/no-absolute-path */
 import { SQSHandler } from "aws-lambda";
-// import { sharp } from "/opt/nodejs/sharp-utils";
-//import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBClient, PutItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
 import {
   GetObjectCommand,
   PutObjectCommandInput,
@@ -11,51 +10,64 @@ import {
   PutObjectCommand,
 } from "@aws-sdk/client-s3";
 
+const ddbDocClient = createDDbDocClient();
 
-const s3 = new S3Client();
+// Initialize s3
+const s3Client = new S3Client();
 
-export const handler: SQSHandler = async (event: any) => {
+export const handler: SQSHandler = async (event) => {
   console.log("Event ", event);
-  const ddbClient = new DynamoDBClient({ region: "eu-west-1"});
-     for (const record of event.Records) {
-      const recordBody = JSON.parse(record.body);
-    console.log('Raw SNS message ',JSON.stringify(recordBody))
-    if (recordBody.Records) {
-      for (const messageRecord of recordBody.Records) {
-        const s3e = messageRecord.s3;
+  for (const record of event.Records) {
+    const recordBody = JSON.parse(record.body);
+    console.log('Record Body ', JSON.stringify(recordBody))
+    const recordMessage = JSON.parse(recordBody.Message);
+    console.log('SNS Message: ', recordMessage)
+    if (recordMessage.Records) {
+      for (const s3Record of recordMessage.Records) {
+        const s3e = s3Record.s3;
         const srcBucket = s3e.bucket.name;
-          // Object key may have spaces or unicode non-ASCII characters.
-          const srcKey = decodeURIComponent(s3e.object.key.replace(/\+/g, " "));
-          // Infer the image type from the file suffix.
-          const typeMatch = srcKey.match(/\.([^.]*)$/);
-          if (!typeMatch) {
-            console.log("Could not determine the image type.");
-            throw new Error("Could not determine the image type. ");
-          }
-          // Check that the image type is supported
-          const imageType = typeMatch[1].toLowerCase();
-          if (imageType !== "jpeg" && imageType !== "png") {
-           
-
-          // processing image upload 
-          const dbParams = {
-            TableName: "ImageTable",
-            Item: { fileName: { S: srcKey } }
-          };
-
-          try {
-            // write image to table
-            await ddbClient.send(new PutItemCommand(dbParams));
-            console.log(`Successfully wrote ${srcKey} to DynamoDB table.`); 
-          } catch (dbError) {
-            console.error("Error writing to DynamoDB", dbError);
-            
-          }
-        } else {
-          console.log(`Unsupported image type: ${imageType}`);
-          throw new Error("Unsupported image type: ${imageType. ");
+        // Object key may have spaces or unicode non-ASCII characters.
+        const srcKey = decodeURIComponent(s3e.object.key.replace(/\+/g, " "));
+        // Infer the image type from the file suffix.
+        const typeMatch = srcKey.match(/\.([^.]*)$/);
+        if (!typeMatch) {
+          console.log("Could not determine the image type.");
+          throw new Error("Could not determine the image type. ");
         }
-      }
+        // Check that the image type is supported
+        const imageType = typeMatch[1].toLowerCase();
+        if (imageType != "jpeg" && imageType != "png") {
+          console.log('Unsupported image ${imageType}.');
+          throw new Error('Unsupported image ${imageType}.');
+        }
+          console.log("adding image to table");
+          const dbParams = {
+            TableName: "Images",
+            Item: {
+              "FileName": srcKey
+            }
+          }
+
+          const putCommand = new PutCommand(dbParams);
+          // write to table
+          await ddbDocClient.send(putCommand);
+        }
+    } else {
+      console.log('error: no records')
     }
   }
 };
+
+function createDDbDocClient() {
+  const ddbClient = new DynamoDBClient({ region: process.env.REGION });
+  const marshallOptions = {
+    convertEmptyValues: true,
+    removeUndefinedValues: true,
+    convertClassInstanceToMap: true,
+  };
+  const unmarshallOptions = {
+    wrapNumbers: false,
+  };
+  const translateConfig = { marshallOptions, unmarshallOptions };
+  return DynamoDBDocumentClient.from(ddbClient, translateConfig);
+}
