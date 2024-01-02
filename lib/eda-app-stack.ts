@@ -81,9 +81,7 @@ export class EDAAppStack extends cdk.Stack {
         entry: `${__dirname}/../lambdas/rejectionMailer.ts`,
       });
 
-      //Subscription for SNS
-      newImageTopic.addSubscription(new subs.SqsSubscription(mailerQ));
-
+  
       new subs.SqsSubscription(imageProcessQueue, {
         filterPolicy: {
           imageType: sns.SubscriptionFilter.stringFilter({
