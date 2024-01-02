@@ -1,8 +1,8 @@
 /* eslint-disable import/extensions, import/no-absolute-path */
 import { SQSHandler } from "aws-lambda";
 // import { sharp } from "/opt/nodejs/sharp-utils";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
+//import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, PutItemCommand } from "@aws-sdk/client-dynamodb";
 import {
   GetObjectCommand,
   PutObjectCommandInput,
@@ -11,13 +11,13 @@ import {
   PutObjectCommand,
 } from "@aws-sdk/client-s3";
 
-const ddbDocClient = createDDbDocClient();
+
 const s3 = new S3Client();
 
-export const handler: SQSHandler = async (event) => {
-  try {
-    console.log("Event ", event);
-    for (const record of event.Records) {
+export const handler: SQSHandler = async (event: any) => {
+  console.log("Event ", event);
+  const ddbClient = new DynamoDBClient({ region: "eu-west-1"});
+     for (const record of event.Records) {
       const recordBody = JSON.parse(record.body);
     console.log('Raw SNS message ',JSON.stringify(recordBody))
     if (recordBody.Records) {
@@ -35,43 +35,27 @@ export const handler: SQSHandler = async (event) => {
           // Check that the image type is supported
           const imageType = typeMatch[1].toLowerCase();
           if (imageType !== "jpeg" && imageType !== "png") {
-            console.log(`Unsupported image type: ${imageType}`);
-            throw new Error(`Unsupported image type: ${imageType}`);
-          }
+           
 
-          // process image upload 
+          // processing image upload 
+          const dbParams = {
+            TableName: "ImageTable",
+            Item: { fileName: { S: srcKey } }
+          };
+
+          try {
+            // write image to table
+            await ddbClient.send(new PutItemCommand(dbParams));
+            console.log(`Successfully wrote ${srcKey} to DynamoDB table.`); 
+          } catch (dbError) {
+            console.error("Error writing to DynamoDB", dbError);
+            
+          }
+        } else {
+          console.log(`Unsupported image type: ${imageType}`);
+          throw new Error("Unsupported image type: ${imageType. ");
         }
       }
     }
-    return {
-      statusCode: 201,
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ message: "Image added" }),
-    };
-  } catch (error) {
-    console.log(JSON.stringify(error));
-    return {
-      statusCode: 500,
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ error }),
-    };
   }
 };
-
-function createDDbDocClient() {
-  const ddbClient = new DynamoDBClient({ region: process.env.REGION });
-  const marshallOptions = {
-    convertEmptyValues: true,
-    removeUndefinedValues: true,
-    convertClassInstanceToMap: true,
-  };
-  const unmarshallOptions = {
-    wrapNumbers: false,
-  };
-  const translateConfig = { marshallOptions, unmarshallOptions };
-  return DynamoDBDocumentClient.from(ddbClient, translateConfig);
-}

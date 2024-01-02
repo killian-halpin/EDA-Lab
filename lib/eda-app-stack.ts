@@ -8,6 +8,7 @@ import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 
 import { Construct } from "constructs";
 // import * as sqs from 'aws-cdk-lib/aws-sqs';
@@ -22,6 +23,12 @@ export class EDAAppStack extends cdk.Stack {
       publicReadAccess: false,
     });
 
+    const imageTable = new dynamodb.Table(this, "ImageTable", {
+      partitionKey: { name: "fileName", type: dynamodb.AttributeType.STRING },
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+  
       // Integration infrastructure
 
       const imageProcessQueue = new sqs.Queue(this, "img-created-queue", {
@@ -36,9 +43,14 @@ export class EDAAppStack extends cdk.Stack {
         receiveMessageWaitTime: cdk.Duration.seconds(10),
       });
 
+
       //SNS
       newImageTopic.addSubscription(
         new subs.SqsSubscription(imageProcessQueue)
+      );
+
+      newImageTopic.addSubscription(
+        new subs.SqsSubscription(mailerQ)
       );
   
       // Lambda functions
@@ -62,8 +74,24 @@ export class EDAAppStack extends cdk.Stack {
         entry: `${__dirname}/../lambdas/mailer.ts`,
       });
 
+      const rejectionMailerFn = new lambdanode.NodejsFunction(this, "rejection-mailer-function", {
+        runtime: lambda.Runtime.NODEJS_16_X,
+        memorySize: 128,
+        timeout: cdk.Duration.seconds(15),
+        entry: `${__dirname}/../lambdas/rejectionMailer.ts`,
+      });
+
       //Subscription for SNS
       newImageTopic.addSubscription(new subs.SqsSubscription(mailerQ));
+
+      new subs.SqsSubscription(imageProcessQueue, {
+        filterPolicy: {
+          imageType: sns.SubscriptionFilter.stringFilter({
+            allowlist: ['.jpeg', '.png'],
+          }),
+        },
+      }),
+
   
       // Event triggers
   
@@ -86,9 +114,11 @@ export class EDAAppStack extends cdk.Stack {
       processImageFn.addEventSource(newImageEventSource);
       mailerFn.addEventSource(newImageMailEventSource);
   
+  
       // Permissions
   
       imagesBucket.grantRead(processImageFn);
+      imageTable.grantReadWriteData(processImageFn);
 
       mailerFn.addToRolePolicy(
         new iam.PolicyStatement({
